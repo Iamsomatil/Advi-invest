@@ -1,7 +1,7 @@
 // api/register.ts
-// Node 22, Web Fetch API style
-const REQUIRED = ["RESEND_API_KEY", "FROM_EMAIL", "TO_EMAIL"] as const;
+// Vercel Node.js Serverless Function (classic req/res signature)
 
+const REQUIRED = ["RESEND_API_KEY", "FROM_EMAIL", "TO_EMAIL"] as const;
 type Body = { name?: string; email?: string; message?: string; company?: string };
 
 const safe = (v: unknown) => String(v ?? "").replace(/[\r\n]/g, " ").slice(0, 1000);
@@ -11,54 +11,41 @@ function readEnv() {
   return { ok: missing.length === 0, missing };
 }
 
-async function readBody(req: Request): Promise<Body> {
-  // Support JSON, urlencoded forms, multipart forms
-  const ct = req.headers.get("content-type") || "";
+async function parseBody(req: any): Promise<Body> {
+  // If Vercel already parsed it (usual for JSON), use it
+  if (req.body && typeof req.body === "object") return req.body as Body;
+
+  // Otherwise, collect the raw body and try JSON -> urlencoded
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  if (!raw) return {};
   try {
-    if (ct.includes("application/json")) {
-      return (await req.json()) as Body;
-    }
-    if (ct.includes("application/x-www-form-urlencoded")) {
-      const txt = await req.text();
-      const pairs = new URLSearchParams(txt);
-      const obj: Record<string, string> = {};
-      pairs.forEach((v, k) => { obj[k] = v; });
-      return obj as Body;
-    }
-    if (ct.includes("multipart/form-data")) {
-      const fd = await req.formData();
-      const obj: Record<string, string> = {};
-      for (const [k, v] of fd.entries()) obj[k] = typeof v === "string" ? v : v.name;
-      return obj as Body;
-    }
-    // Fallback: try JSON, then urlencoded
-    const txt = await req.text();
-    try { return JSON.parse(txt); } catch { 
-      const pairs = new URLSearchParams(txt);
-      const obj: Record<string, string> = {};
-      pairs.forEach((v, k) => { obj[k] = v; });
-      return obj as Body;
-    }
+    return JSON.parse(raw);
   } catch {
-    return {};
+    const params = new URLSearchParams(raw);
+    const obj: Record<string, string> = {};
+    for (const [k, v] of params.entries()) obj[k] = v;
+    return obj as Body;
   }
 }
 
-async function sendWithResendREST(
-  from: string,
-  to: string,
-  subject: string,
-  html: string,
-  apiKey: string,
-  timeoutMs = 12000
-) {
+async function sendWithResendREST(opts: {
+  from: string;
+  to: string;
+  subject: string;
+  html: string;
+  apiKey: string;
+  timeoutMs?: number;
+}) {
+  const { from, to, subject, html, apiKey, timeoutMs = 12000 } = opts;
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  const toid = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({ from, to, subject, html }),
@@ -67,38 +54,33 @@ async function sendWithResendREST(
     const json = await res.json().catch(() => ({}));
     return { ok: res.ok, status: res.status, json };
   } finally {
-    clearTimeout(t);
+    clearTimeout(toid);
   }
 }
 
-export default async function handler(request: Request): Promise<Response> {
+export default async function handler(req: any, res: any) {
   const started = Date.now();
   const log = (...a: any[]) => console.log("[/api/register]", ...a);
 
-  if (request.method !== "POST") {
-    return new Response(JSON.stringify({ ok: false, error: "Method not allowed" }), {
-      status: 405, headers: { "content-type": "application/json" }
-    });
+  if (req.method !== "POST") {
+    res.status(405).setHeader("content-type", "application/json").send(JSON.stringify({ ok: false, error: "Method not allowed" }));
+    return;
   }
 
-  // Env check
   const env = readEnv();
   if (!env.ok) {
     log("Missing env", env.missing);
-    return new Response(JSON.stringify({ ok: false, error: `Missing env: ${env.missing.join(", ")}` }), {
-      status: 500, headers: { "content-type": "application/json" }
-    });
+    res.status(500).json({ ok: false, error: `Missing env: ${env.missing.join(", ")}` });
+    return;
   }
 
-  // Parse body (never hangs)
-  const body = await readBody(request);
+  const body = await parseBody(req).catch(() => ({}));
   log("Parsed body in", Date.now() - started, "ms:", body);
 
-  // Honeypot
   if (body.company) {
-    return new Response(JSON.stringify({ ok: true }), {
-      status: 200, headers: { "content-type": "application/json" }
-    });
+    // Honeypot hit
+    res.status(200).json({ ok: true });
+    return;
   }
 
   const name = safe(body.name);
@@ -106,9 +88,8 @@ export default async function handler(request: Request): Promise<Response> {
   const message = safe(body.message);
 
   if (!name || !email) {
-    return new Response(JSON.stringify({ ok: false, error: "Missing name or email" }), {
-      status: 400, headers: { "content-type": "application/json" }
-    });
+    res.status(400).json({ ok: false, error: "Missing name or email" });
+    return;
   }
 
   const html = `
@@ -119,27 +100,22 @@ export default async function handler(request: Request): Promise<Response> {
     <p><small>Submitted: ${new Date().toISOString()}</small></p>
   `;
 
-  // Call Resend REST with a short timeout so we never hit 300s
   const from = `Percy — AdviTravel <${process.env.FROM_EMAIL!}>`;
-  const res = await sendWithResendREST(
+  const out = await sendWithResendREST({
     from,
-    process.env.TO_EMAIL!,
-    "New investor form submission",
+    to: process.env.TO_EMAIL!,
+    subject: "New investor form submission",
     html,
-    process.env.RESEND_API_KEY!,
-    12000 // 12s timeout
-  ).catch((e) => ({ ok: false, status: 0, json: { error: String(e?.message || e) } }));
+    apiKey: process.env.RESEND_API_KEY!,
+    timeoutMs: 12000
+  }).catch((e) => ({ ok: false, status: 0, json: { error: String(e?.message || e) } }));
 
-  log("Resend returned in", Date.now() - started, "ms", res.status, res.json);
+  log("Resend returned in", Date.now() - started, "ms", out.status, out.json);
 
-  if (!res.ok) {
-    // Bubble up the exact error for debugging
-    return new Response(JSON.stringify({ ok: false, error: "Resend error", detail: res.json }), {
-      status: 502, headers: { "content-type": "application/json" }
-    });
+  if (!out.ok) {
+    res.status(502).json({ ok: false, error: "Resend error", detail: out.json });
+    return;
   }
 
-  return new Response(JSON.stringify({ ok: true, id: (res.json as any)?.id ?? null }), {
-    status: 200, headers: { "content-type": "application/json" }
-  });
+  res.status(200).json({ ok: true, id: (out.json as any)?.id ?? null });
 }
