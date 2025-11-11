@@ -112,7 +112,7 @@ export default function InvestorForm() {
         device: window.innerWidth < 768 ? 'mobile' : 'desktop'
       };
 
-      const response = await fetch('https://hooks.zapier.com/hooks/catch/YOUR_ID/INVESTORS', {
+      const response = await fetch('/api/register', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

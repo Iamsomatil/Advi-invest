@@ -80,14 +80,14 @@ export default function MarketBusiness() {
                   <div className="w-2 h-2 bg-[#1DB5C4] rounded-full mt-2 flex-shrink-0" />
                   <div>
                     <span className="font-semibold text-[#0E3A5D]">Basic:</span>
-                    <span className="text-[#1A1A1A]/70"> $49/mo — Profile + leads</span>
+                    <span className="text-[#1A1A1A]/70"> $19/mo — Profile + leads</span>
                   </div>
                 </li>
                 <li className="flex items-start gap-3">
                   <div className="w-2 h-2 bg-[#1DB5C4] rounded-full mt-2 flex-shrink-0" />
                   <div>
                     <span className="font-semibold text-[#0E3A5D]">Pro:</span>
-                    <span className="text-[#1A1A1A]/70"> $199/mo — Analytics + priority placement</span>
+                    <span className="text-[#1A1A1A]/70"> $99/mo — Analytics + priority placement</span>
                   </div>
                 </li>
                 <li className="flex items-start gap-3">

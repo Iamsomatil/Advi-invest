@@ -65,11 +65,11 @@ export default function Footer() {
             </div>
 
             <a
-              href="mailto:investors@advitravel.com"
+              href="mailto:info@advitravel.com"
               className="flex items-center gap-2 text-white/70 hover:text-[#1DB5C4] transition-colors text-sm"
             >
               <Mail className="w-4 h-4" />
-              investors@advitravel.com
+              info@advitravel.com
             </a>
           </div>
         </div>
