@@ -1,8 +1,17 @@
 // api/register.ts
 // Vercel Node.js Serverless Function (classic req/res signature)
+import { IncomingMessage, ServerResponse } from "http";
 
 const REQUIRED = ["RESEND_API_KEY", "FROM_EMAIL", "TO_EMAIL"] as const;
 type Body = { name?: string; email?: string; message?: string; company?: string };
+
+type Req = IncomingMessage & { method?: string; body?: unknown };
+type Res = ServerResponse & {
+  status: (code: number) => Res;
+  json: (obj: unknown) => void;
+  setHeader: (name: string, value: string) => void;
+  send: (body: string) => void;
+};
 
 const safe = (v: unknown) => String(v ?? "").replace(/[\r\n]/g, " ").slice(0, 1000);
 
@@ -11,9 +20,18 @@ function readEnv() {
   return { ok: missing.length === 0, missing };
 }
 
-async function parseBody(req: any): Promise<Body> {
+function getErrorMessage(e: unknown): string {
+  if (e && typeof e === "object" && "message" in e) {
+    const m = (e as { message?: unknown }).message;
+    return typeof m === "string" ? m : String(e);
+  }
+  return String(e);
+}
+
+async function parseBody(req: IncomingMessage): Promise<Body> {
   // If Vercel already parsed it (usual for JSON), use it
-  if (req.body && typeof req.body === "object") return req.body as Body;
+  // @ts-expect-error body is an extension on IncomingMessage in some platforms
+  if ((req as Req).body && typeof (req as Req).body === "object") return (req as Req).body as Body;
 
   // Otherwise, collect the raw body and try JSON -> urlencoded
   const chunks: Buffer[] = [];
@@ -30,37 +48,9 @@ async function parseBody(req: any): Promise<Body> {
   }
 }
 
-async function sendWithResendREST(opts: {
-  from: string;
-  to: string;
-  subject: string;
-  html: string;
-  apiKey: string;
-  timeoutMs?: number;
-}) {
-  const { from, to, subject, html, apiKey, timeoutMs = 12000 } = opts;
-  const ctrl = new AbortController();
-  const toid = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ from, to, subject, html }),
-      signal: ctrl.signal
-    });
-    const json = await res.json().catch(() => ({}));
-    return { ok: res.ok, status: res.status, json };
-  } finally {
-    clearTimeout(toid);
-  }
-}
-
-export default async function handler(req: any, res: any) {
+export default async function handler(req: Req, res: Res) {
   const started = Date.now();
-  const log = (...a: any[]) => console.log("[/api/register]", ...a);
+  const log = (...a: unknown[]) => console.log("[/api/register]", ...a);
 
   if (req.method !== "POST") {
     res.status(405).setHeader("content-type", "application/json").send(JSON.stringify({ ok: false, error: "Method not allowed" }));
@@ -74,7 +64,12 @@ export default async function handler(req: any, res: any) {
     return;
   }
 
-  const body = await parseBody(req).catch(() => ({}));
+  let body: Body = {};
+  try {
+    body = await parseBody(req);
+  } catch {
+    body = {};
+  }
   log("Parsed body in", Date.now() - started, "ms:", body);
 
   if (body.company) {
@@ -100,15 +95,31 @@ export default async function handler(req: any, res: any) {
     <p><small>Submitted: ${new Date().toISOString()}</small></p>
   `;
 
-  const from = `Percy — AdviTravel <${process.env.FROM_EMAIL!}>`;
-  const out = await sendWithResendREST({
-    from,
-    to: process.env.TO_EMAIL!,
-    subject: "New investor form submission",
-    html,
-    apiKey: process.env.RESEND_API_KEY!,
-    timeoutMs: 12000
-  }).catch((e) => ({ ok: false, status: 0, json: { error: String(e?.message || e) } }));
+  const out = await (async () => {
+    try {
+      const resp = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: `Percy — AdviTravel <${process.env.FROM_EMAIL}>`,
+          to: process.env.TO_EMAIL,
+          subject: "New investor form submission",
+          html,
+        }),
+      });
+      const json: Record<string, unknown> = await resp.json().catch(() => ({} as Record<string, unknown>));
+      return { ok: resp.ok, status: resp.status, json };
+    } catch (e) {
+      return {
+        ok: false,
+        status: 0,
+        json: { error: getErrorMessage(e) },
+      } as { ok: boolean; status: number; json: Record<string, unknown> | { error: string } };
+    }
+  })();
 
   log("Resend returned in", Date.now() - started, "ms", out.status, out.json);
 
@@ -117,5 +128,6 @@ export default async function handler(req: any, res: any) {
     return;
   }
 
-  res.status(200).json({ ok: true, id: (out.json as any)?.id ?? null });
+  const id = typeof out.json === "object" && out.json && "id" in out.json ? (out.json as { id?: unknown }).id ?? null : null;
+  res.status(200).json({ ok: true, id });
 }
